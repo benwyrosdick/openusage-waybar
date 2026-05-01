@@ -9,15 +9,15 @@ This project is a Linux-only fork of [openusage](https://github.com/robinebers/o
 ## Install
 
 ```sh
-cargo install --git https://github.com/benwyrosdick/openusage --bin openusage-waybar
+cargo install --git https://github.com/benwyrosdick/openusage-waybar --bin openusage-waybar
 ```
 
 ## Set up plugins
 
 ```sh
-git clone https://github.com/benwyrosdick/openusage /tmp/openusage
+git clone https://github.com/benwyrosdick/openusage-waybar /tmp/openusage-waybar
 mkdir -p ~/.local/share/openusage
-cp -r /tmp/openusage/plugins ~/.local/share/openusage/plugins
+cp -r /tmp/openusage-waybar/plugins ~/.local/share/openusage/plugins
 ```
 
 ## Add to your Waybar config
