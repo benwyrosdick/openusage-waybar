@@ -88,16 +88,14 @@ fn severity_color(pct: u8) -> &'static str {
     }
 }
 
-/// Renders a Pango progress bar. `remaining_pct` is 0–100 representing how much is left.
-/// The filled portion (colored by severity) shows remaining; the dim portion shows used.
-/// `time_remaining_pct` optionally places a thin tick marking where we are in the
-/// refresh cycle (100 = just reset, 0 = about to reset).
-fn build_progress_bar(remaining_pct: u8, used_pct: u8, time_remaining_pct: Option<u8>) -> String {
-    let total_chars: usize = 20;
+const BAR_CELLS: usize = 20;
+
+fn build_progress_bar(used_pct: u8, time_remaining_pct: Option<u8>) -> String {
+    let remaining_pct = 100u8.saturating_sub(used_pct);
     let filled = if remaining_pct > 0 {
-        ((remaining_pct as usize * total_chars) / 100)
+        ((remaining_pct as usize * BAR_CELLS) / 100)
             .max(1)
-            .min(total_chars)
+            .min(BAR_CELLS)
     } else {
         0
     };
@@ -107,87 +105,72 @@ fn build_progress_bar(remaining_pct: u8, used_pct: u8, time_remaining_pct: Optio
 
     let marker_idx = time_remaining_pct.map(|t| {
         let t = t.min(100) as usize;
-        ((t * total_chars) / 100).min(total_chars.saturating_sub(1))
+        ((t * BAR_CELLS) / 100).min(BAR_CELLS - 1)
     });
 
-    let cell = |i: usize| -> (&'static str, &'static str, Option<&'static str>) {
+    // All cells emit `background=` so the marker's `▌` cell-box matches the
+    // surrounding `█` cells and the bar doesn't look bumpy at the marker.
+    let cell = |i: usize| -> (&'static str, &'static str, &'static str) {
         if Some(i) == marker_idx {
             let bg = if i < filled { bar_color } else { empty_color };
-            ("▌", marker_color, Some(bg))
+            ("▌", marker_color, bg)
         } else if i < filled {
-            ("█", bar_color, Some(bar_color))
+            ("█", bar_color, bar_color)
         } else {
-            ("█", empty_color, Some(empty_color))
+            ("█", empty_color, empty_color)
         }
     };
 
     let mut out = String::new();
     let mut i = 0;
-    while i < total_chars {
+    while i < BAR_CELLS {
         let c = cell(i);
         let mut j = i + 1;
-        while j < total_chars && cell(j) == c {
+        while j < BAR_CELLS && cell(j) == c {
             j += 1;
         }
         let (ch, fg, bg) = c;
         let segment: String = ch.repeat(j - i);
-        let span = match bg {
-            Some(bg) => format!(
-                "<span foreground=\"{fg}\" background=\"{bg}\">{segment}</span>"
-            ),
-            None => format!("<span foreground=\"{fg}\">{segment}</span>"),
-        };
-        out.push_str(&span);
+        out.push_str(&format!(
+            "<span foreground=\"{fg}\" background=\"{bg}\">{segment}</span>"
+        ));
         i = j;
     }
     out
 }
 
-/// Returns 0–100 representing how much of the current refresh cycle is left.
-/// 100 = period just started, 0 = period about to reset.
-fn time_remaining_pct(resets_at: Option<&str>, period_ms: Option<u64>) -> Option<u8> {
+fn parse_resets_dur(resets_at: &str) -> Option<time::Duration> {
     use time::OffsetDateTime;
     use time::format_description::well_known::Iso8601;
 
-    let resets_at = resets_at?;
-    let period_ms = period_ms?;
-    if period_ms == 0 {
-        return None;
-    }
     let target = OffsetDateTime::parse(resets_at, &Iso8601::DEFAULT).ok()?;
-    let now = OffsetDateTime::now_utc();
-    let dur = target - now;
-    if dur.is_negative() {
-        return Some(0);
-    }
-    let remaining_ms = dur.whole_milliseconds().max(0) as u128;
-    let pct = (remaining_ms as f64 / period_ms as f64 * 100.0).round();
-    Some(pct.clamp(0.0, 100.0) as u8)
+    Some(target - OffsetDateTime::now_utc())
 }
 
-fn format_resets_in(resets_at: &str) -> Option<String> {
-    use time::OffsetDateTime;
-    use time::format_description::well_known::Iso8601;
-
-    let target = OffsetDateTime::parse(resets_at, &Iso8601::DEFAULT).ok()?;
-    let now = OffsetDateTime::now_utc();
-    let dur = target - now;
-
-    if dur.is_negative() {
-        return Some("Expired".to_string());
+// 100 = period just started, 0 = period about to reset.
+fn time_remaining_pct(dur: time::Duration, period_ms: u64) -> u8 {
+    if period_ms == 0 || dur.is_negative() {
+        return 0;
     }
+    let pct = (dur.whole_milliseconds() as f64 / period_ms as f64 * 100.0).round();
+    pct.clamp(0.0, 100.0) as u8
+}
 
+fn format_resets_in(dur: time::Duration) -> String {
+    if dur.is_negative() {
+        return "Expired".to_string();
+    }
     let total_secs = dur.whole_seconds();
     let days = total_secs / 86400;
     let hours = (total_secs % 86400) / 3600;
     let mins = (total_secs % 3600) / 60;
 
     if days > 0 {
-        Some(format!("Resets in {}d {}h", days, hours))
+        format!("Resets in {}d {}h", days, hours)
     } else if hours > 0 {
-        Some(format!("Resets in {}h {}m", hours, mins))
+        format!("Resets in {}h {}m", hours, mins)
     } else {
-        Some(format!("Resets in {}m", mins))
+        format!("Resets in {}m", mins)
     }
 }
 
@@ -290,16 +273,15 @@ fn build_tooltip_for_output(output: &PluginOutput) -> String {
             } => {
                 let label = pango_escape(label);
                 let used_pct = used_percentage(*used, *limit);
-                let remaining_pct = 100u8.saturating_sub(used_pct);
                 let color = severity_color(used_pct);
                 let dot = format!("<span foreground=\"{color}\">●</span>");
-                let time_pct = time_remaining_pct(resets_at.as_deref(), *period_duration_ms);
-                let bar = build_progress_bar(remaining_pct, used_pct, time_pct);
+                let resets_dur = resets_at.as_deref().and_then(parse_resets_dur);
+                let time_pct = resets_dur
+                    .zip(*period_duration_ms)
+                    .map(|(d, p)| time_remaining_pct(d, p));
+                let bar = build_progress_bar(used_pct, time_pct);
                 let remaining = format_remaining(*used, *limit, format);
-                let resets = resets_at
-                    .as_deref()
-                    .and_then(format_resets_in)
-                    .unwrap_or_default();
+                let resets = resets_dur.map(format_resets_in).unwrap_or_default();
 
                 parts.push(format!("<b>{label}</b> {dot}"));
                 parts.push(bar);
