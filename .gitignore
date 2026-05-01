@@ -1,0 +1,23 @@
+# Logs
+logs
+*.log
+
+# Editor directories and files
+.vscode/
+.idea
+.DS_Store
+*.swp
+*.swo
+
+# Environment files
+.env*
+!.env.example
+
+# Agent working files
+docs/choices.md
+docs/breadcrumbs.md
+docs/specs/*
+plans/*
+
+# Cargo build artifacts
+/target/

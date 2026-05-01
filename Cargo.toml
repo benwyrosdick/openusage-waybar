@@ -1,0 +1,3 @@
+[workspace]
+members = ["crates/openusage-plugin-engine", "crates/openusage-waybar"]
+resolver = "2"
