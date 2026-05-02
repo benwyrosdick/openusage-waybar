@@ -68,23 +68,41 @@ fn used_percentage(used: f64, limit: f64) -> u8 {
     pct.min(100)
 }
 
-fn severity_class(pct: u8) -> &'static str {
-    if pct >= 90 {
-        "critical"
-    } else if pct >= 75 {
-        "warning"
-    } else {
-        "normal"
-    }
+#[derive(Clone, Copy)]
+struct Severity {
+    color: &'static str,
+    class: &'static str,
 }
 
-fn severity_color(pct: u8) -> &'static str {
-    if pct >= 90 {
-        "#ef4444"
-    } else if pct >= 75 {
-        "#eab308"
-    } else {
-        "#22c55e"
+const SEV_NORMAL: Severity = Severity { color: "#22c55e", class: "normal" };
+const SEV_WARN: Severity = Severity { color: "#eab308", class: "warning" };
+const SEV_CRIT: Severity = Severity { color: "#ef4444", class: "critical" };
+
+// When `time_remaining_pct` is known, severity is set by usage relative to where
+// we are in the refresh cycle: ahead of pace = green, behind = yellow, less than
+// half the time-remaining left in usage = red. Without a known cycle length,
+// fall back to absolute used-percent thresholds.
+fn severity(used_pct: u8, time_remaining_pct: Option<u8>) -> Severity {
+    let remaining_pct = 100u8.saturating_sub(used_pct);
+    match time_remaining_pct {
+        Some(t) => {
+            if remaining_pct >= t {
+                SEV_NORMAL
+            } else if (remaining_pct as u16) * 2 < t as u16 {
+                SEV_CRIT
+            } else {
+                SEV_WARN
+            }
+        }
+        None => {
+            if used_pct >= 90 {
+                SEV_CRIT
+            } else if used_pct >= 75 {
+                SEV_WARN
+            } else {
+                SEV_NORMAL
+            }
+        }
     }
 }
 
@@ -99,7 +117,7 @@ fn build_progress_bar(used_pct: u8, time_remaining_pct: Option<u8>) -> String {
     } else {
         0
     };
-    let bar_color = severity_color(used_pct);
+    let bar_color = severity(used_pct, time_remaining_pct).color;
     let empty_color = "#4b5563";
     let marker_color = "#e5e7eb";
 
@@ -197,10 +215,34 @@ fn format_remaining(used: f64, limit: f64, format: &ProgressFormat) -> String {
 struct ProgressInfo {
     provider: String,
     pct: u8,
+    time_remaining_pct: Option<u8>,
+}
+
+fn progress_info_from(line: &MetricLine, provider: &str) -> Option<ProgressInfo> {
+    let MetricLine::Progress {
+        used,
+        limit,
+        resets_at,
+        period_duration_ms,
+        ..
+    } = line
+    else {
+        return None;
+    };
+    let pct = used_percentage(*used, *limit);
+    let time_remaining_pct = resets_at
+        .as_deref()
+        .and_then(parse_resets_dur)
+        .zip(*period_duration_ms)
+        .map(|(d, p)| time_remaining_pct(d, p));
+    Some(ProgressInfo {
+        provider: provider.to_string(),
+        pct,
+        time_remaining_pct,
+    })
 }
 
 fn extract_primary_progress(plugin: &LoadedPlugin, output: &PluginOutput) -> Option<ProgressInfo> {
-    // Build ordered list of primary candidate labels from manifest
     let mut candidates: Vec<_> = plugin
         .manifest
         .lines
@@ -209,35 +251,20 @@ fn extract_primary_progress(plugin: &LoadedPlugin, output: &PluginOutput) -> Opt
         .collect();
     candidates.sort_by_key(|l| l.primary_order.unwrap());
 
-    // Try each candidate in primaryOrder, then fall back to first progress line
     for candidate in &candidates {
         for line in &output.lines {
-            if let MetricLine::Progress {
-                label, used, limit, ..
-            } = line
-            {
+            if let MetricLine::Progress { label, .. } = line {
                 if label == &candidate.label {
-                    let pct = used_percentage(*used, *limit);
-                    return Some(ProgressInfo {
-                        provider: output.display_name.clone(),
-                        pct,
-                    });
+                    return progress_info_from(line, &output.display_name);
                 }
             }
         }
     }
 
-    // Fallback: first progress line
-    for line in &output.lines {
-        if let MetricLine::Progress { used, limit, .. } = line {
-            let pct = used_percentage(*used, *limit);
-            return Some(ProgressInfo {
-                provider: output.display_name.clone(),
-                pct,
-            });
-        }
-    }
-    None
+    output
+        .lines
+        .iter()
+        .find_map(|l| progress_info_from(l, &output.display_name))
 }
 
 fn pango_escape(s: &str) -> String {
@@ -273,12 +300,12 @@ fn build_tooltip_for_output(output: &PluginOutput) -> String {
             } => {
                 let label = pango_escape(label);
                 let used_pct = used_percentage(*used, *limit);
-                let color = severity_color(used_pct);
-                let dot = format!("<span foreground=\"{color}\">●</span>");
                 let resets_dur = resets_at.as_deref().and_then(parse_resets_dur);
                 let time_pct = resets_dur
                     .zip(*period_duration_ms)
                     .map(|(d, p)| time_remaining_pct(d, p));
+                let color = severity(used_pct, time_pct).color;
+                let dot = format!("<span foreground=\"{color}\">●</span>");
                 let bar = build_progress_bar(used_pct, time_pct);
                 let remaining = format_remaining(*used, *limit, format);
                 let resets = resets_dur.map(format_resets_in).unwrap_or_default();
@@ -438,17 +465,23 @@ fn main() {
         } else {
             ("ok".to_string(), 0u8, "normal")
         }
-    } else if primary_progress.len() == 1 {
-        let info = &primary_progress[0];
-        let remaining = 100u8.saturating_sub(info.pct);
-        let text = format!("{} {}%", info.provider, remaining);
-        (text, info.pct, severity_class(info.pct))
     } else {
-        // Multiple providers: show the one with highest usage percentage
-        let worst = primary_progress.iter().max_by_key(|p| p.pct).unwrap();
+        // Pick the provider with the worst severity; tie-break by used percentage.
+        let worst = primary_progress
+            .iter()
+            .max_by_key(|p| {
+                let rank = match severity(p.pct, p.time_remaining_pct).class {
+                    "critical" => 2,
+                    "warning" => 1,
+                    _ => 0,
+                };
+                (rank, p.pct)
+            })
+            .unwrap();
         let remaining = 100u8.saturating_sub(worst.pct);
         let text = format!("{} {}%", worst.provider, remaining);
-        (text, worst.pct, severity_class(worst.pct))
+        let class = severity(worst.pct, worst.time_remaining_pct).class;
+        (text, worst.pct, class)
     };
 
     let tooltip = tooltip_sections.join("\n\n");
