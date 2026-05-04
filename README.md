@@ -55,7 +55,8 @@ Run `openusage-waybar --list` to see available plugin IDs. Pass no arguments to 
 1. `$OPENUSAGE_PLUGINS_DIR`
 2. `~/.local/share/openusage/plugins` (XDG data)
 3. `~/.config/openusage/plugins`
-4. `./plugins` or `../plugins` (development)
+4. `/usr/share/openusage/plugins` (system-wide install, e.g. AUR)
+5. `./plugins` or `../plugins` (development)
 
 ## Supported providers
 

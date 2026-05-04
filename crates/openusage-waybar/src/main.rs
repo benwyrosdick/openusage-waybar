@@ -36,7 +36,13 @@ fn find_plugins_dir() -> Option<PathBuf> {
         }
     }
 
-    // 4. Development: ./plugins or ../plugins relative to cwd
+    // 4. System-wide install (e.g. AUR / distro packages): /usr/share/openusage/plugins
+    let system = PathBuf::from("/usr/share/openusage/plugins");
+    if system.is_dir() {
+        return Some(system);
+    }
+
+    // 5. Development: ./plugins or ../plugins relative to cwd
     if let Ok(cwd) = std::env::current_dir() {
         let direct = cwd.join("plugins");
         if direct.is_dir() {
@@ -371,6 +377,13 @@ fn main() {
         eprintln!("  OPENUSAGE_DATA_DIR     Path to app data directory");
         eprintln!("  RUST_LOG               Log level (default: warn)");
         eprintln!();
+        eprintln!("Plugin search order (first match wins):");
+        eprintln!("  1. $OPENUSAGE_PLUGINS_DIR");
+        eprintln!("  2. ~/.local/share/openusage/plugins");
+        eprintln!("  3. ~/.config/openusage/plugins");
+        eprintln!("  4. /usr/share/openusage/plugins");
+        eprintln!("  5. ./plugins or ../plugins (development)");
+        eprintln!();
         eprintln!("Waybar config example:");
         eprintln!("  \"custom/openusage\": {{");
         eprintln!("    \"exec\": \"openusage-waybar claude\",");
@@ -385,7 +398,7 @@ fn main() {
         None => {
             let output = WaybarOutput {
                 text: "no plugins".to_string(),
-                tooltip: "OpenUsage: plugins directory not found.\nSet OPENUSAGE_PLUGINS_DIR or place plugins in ~/.local/share/openusage/plugins/".to_string(),
+                tooltip: "OpenUsage: plugins directory not found.\nInstall via your package manager, set OPENUSAGE_PLUGINS_DIR, or place plugins in ~/.local/share/openusage/plugins/".to_string(),
                 class: "critical".to_string(),
                 percentage: 0,
             };
