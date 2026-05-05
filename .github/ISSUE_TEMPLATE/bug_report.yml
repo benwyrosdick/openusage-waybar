@@ -41,7 +41,7 @@ body:
     attributes:
       label: openusage-waybar version
       description: Output of `openusage-waybar --help` first line, or your install method/commit.
-      placeholder: "e.g. 0.6.9 / cargo install --git ..."
+      placeholder: "e.g. 0.6.10 / cargo install --git ..."
     validations:
       required: true
   - type: input

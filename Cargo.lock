@@ -860,7 +860,7 @@ dependencies = [
 
 [[package]]
 name = "openusage-plugin-engine"
-version = "0.6.9"
+version = "0.6.10"
 dependencies = [
  "base64",
  "dirs",
@@ -875,7 +875,7 @@ dependencies = [
 
 [[package]]
 name = "openusage-waybar"
-version = "0.6.9"
+version = "0.6.10"
 dependencies = [
  "dirs",
  "env_logger",
