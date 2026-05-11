@@ -84,6 +84,10 @@ const SEV_NORMAL: Severity = Severity { color: "#22c55e", class: "normal" };
 const SEV_WARN: Severity = Severity { color: "#eab308", class: "warning" };
 const SEV_CRIT: Severity = Severity { color: "#ef4444", class: "critical" };
 
+// Treat usage within this many points of the time marker as on-pace. Avoids
+// flapping to yellow on the 99%-left/100%-time-remaining cycle-start case.
+const PACE_GRACE_PCT: u8 = 5;
+
 // When `time_remaining_pct` is known, severity is set by usage relative to where
 // we are in the refresh cycle: ahead of pace = green, behind = yellow, less than
 // half the time-remaining left in usage = red. Without a known cycle length,
@@ -92,7 +96,7 @@ fn severity(used_pct: u8, time_remaining_pct: Option<u8>) -> Severity {
     let remaining_pct = 100u8.saturating_sub(used_pct);
     match time_remaining_pct {
         Some(t) => {
-            if remaining_pct >= t {
+            if remaining_pct.saturating_add(PACE_GRACE_PCT) >= t {
                 SEV_NORMAL
             } else if (remaining_pct as u16) * 2 < t as u16 {
                 SEV_CRIT
