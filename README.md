@@ -34,11 +34,28 @@ In `~/.config/waybar/config.jsonc`:
   "interval": 300,
   "format": "{}",
   "tooltip": true,
-  "signal": 8  // optional: refresh with pkill -SIGRTMIN+8 waybar
+  "signal": 8,  // refresh with pkill -SIGRTMIN+8 waybar
+  "on-click-right": "openusage-waybar --refresh --signal 8 claude codex"  // manual refresh
 }
 ```
 
 Run `openusage-waybar --list` to see available plugin IDs. Pass no arguments to run all plugins.
+
+## Manual refresh
+
+The module refreshes automatically every `interval` seconds. To refresh on demand,
+add an `on-click-right` entry (as above) so right-clicking the module triggers a
+fetch. The plugin list passed to `--refresh` must match the one in `exec`, and
+`--signal` must match the module's `signal` value.
+
+While reloading, the module briefly shows a `reloading` state (the previous
+tooltip stays visible on hover). Style it in your Waybar CSS:
+
+```css
+#custom-openusage.reloading {
+  opacity: 0.6;
+}
+```
 
 ## Environment variables
 

@@ -1,9 +1,12 @@
 use openusage_plugin_engine::manifest::LoadedPlugin;
 use openusage_plugin_engine::runtime::{MetricLine, PluginOutput, ProgressFormat};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
+use std::time::{Duration, SystemTime};
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 struct WaybarOutput {
     text: String,
     tooltip: String,
@@ -64,6 +67,106 @@ fn app_data_dir() -> PathBuf {
     dirs::data_dir()
         .unwrap_or_else(|| PathBuf::from("/tmp"))
         .join("openusage")
+}
+
+// Manual-refresh state lives in a per-module pair of files (cache + reload flag),
+// keyed by the set of selected plugins so multiple Waybar modules don't collide.
+struct RefreshState {
+    cache: PathBuf,
+    reload: PathBuf,
+}
+
+// Ignore reload flags older than this; protects against a stuck loading frame if
+// the refresh worker dies between writing the flag and clearing it.
+const RELOAD_FLAG_MAX_AGE: Duration = Duration::from_secs(20);
+
+fn refresh_state(app_data: &PathBuf, plugin_ids: &[&str]) -> RefreshState {
+    let mut sorted: Vec<&str> = plugin_ids.to_vec();
+    sorted.sort_unstable();
+    let key = if sorted.is_empty() {
+        "all".to_string()
+    } else {
+        let mut hasher = DefaultHasher::new();
+        sorted.join(",").hash(&mut hasher);
+        format!("{:016x}", hasher.finish())
+    };
+    RefreshState {
+        cache: app_data.join(format!("waybar-{key}.cache.json")),
+        reload: app_data.join(format!("waybar-{key}.reload")),
+    }
+}
+
+fn file_age(path: &PathBuf) -> Option<Duration> {
+    let modified = std::fs::metadata(path).ok()?.modified().ok()?;
+    SystemTime::now().duration_since(modified).ok()
+}
+
+// A fresh reload flag means the user just asked for a refresh and we should show a
+// loading frame instead of fetching.
+fn reload_pending(state: &RefreshState) -> bool {
+    match file_age(&state.reload) {
+        Some(age) => age <= RELOAD_FLAG_MAX_AGE,
+        None => false,
+    }
+}
+
+fn write_cache(state: &RefreshState, output: &WaybarOutput) {
+    if let Ok(json) = serde_json::to_string(output) {
+        let _ = std::fs::write(&state.cache, json);
+    }
+}
+
+fn read_cache(state: &RefreshState) -> Option<WaybarOutput> {
+    let json = std::fs::read_to_string(&state.cache).ok()?;
+    serde_json::from_str(&json).ok()
+}
+
+// Loading frame: keep the previous tooltip/percentage so hover stays useful, but
+// flag the bar as reloading (style via the `.reloading` CSS class).
+fn loading_output(state: &RefreshState) -> WaybarOutput {
+    match read_cache(state) {
+        Some(prev) => WaybarOutput {
+            text: format!("{} ", prev.text.trim()),
+            tooltip: prev.tooltip,
+            class: "reloading".to_string(),
+            percentage: prev.percentage,
+        },
+        None => WaybarOutput {
+            text: " reloading".to_string(),
+            tooltip: "Reloading…".to_string(),
+            class: "reloading".to_string(),
+            percentage: 0,
+        },
+    }
+}
+
+fn send_waybar_signal(signal: u8) {
+    let spec = format!("-SIGRTMIN+{signal}");
+    let _ = std::process::Command::new("pkill")
+        .arg(spec)
+        .arg("waybar")
+        .status();
+}
+
+// Right-click worker: flash a loading frame, then trigger the real fetch. The
+// worker owns the flag lifecycle so the display `exec` never deletes it, which
+// avoids a race between the two signals.
+fn run_refresh_worker(state: &RefreshState, signal: Option<u8>) {
+    let Some(signal) = signal else {
+        eprintln!("--refresh requires --signal N (the Waybar `signal` value)");
+        std::process::exit(2);
+    };
+
+    // 1. Raise the flag and ask Waybar to re-render -> shows the loading frame.
+    let _ = std::fs::write(&state.reload, b"");
+    send_waybar_signal(signal);
+
+    // 2. Give Waybar time to pick up the loading frame before clearing the flag.
+    std::thread::sleep(Duration::from_millis(350));
+
+    // 3. Clear the flag and re-render -> the display `exec` now fetches fresh.
+    let _ = std::fs::remove_file(&state.reload);
+    send_waybar_signal(signal);
 }
 
 fn used_percentage(used: f64, limit: f64) -> u8 {
@@ -356,12 +459,32 @@ fn parse_args() -> Vec<String> {
     std::env::args().skip(1).collect()
 }
 
+// Pull `--signal N` out of the args, returning the value and the remaining args.
+fn take_signal(args: Vec<String>) -> (Option<u8>, Vec<String>) {
+    let mut signal = None;
+    let mut rest = Vec::new();
+    let mut iter = args.into_iter();
+    while let Some(arg) = iter.next() {
+        match arg.as_str() {
+            "--signal" => {
+                signal = iter.next().and_then(|v| v.parse::<u8>().ok());
+            }
+            other if other.starts_with("--signal=") => {
+                signal = other["--signal=".len()..].parse::<u8>().ok();
+            }
+            _ => rest.push(arg),
+        }
+    }
+    (signal, rest)
+}
+
 fn main() {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn"))
         .format_timestamp(None)
         .init();
 
-    let args = parse_args();
+    let (signal, args) = take_signal(parse_args());
+    let refresh_mode = args.iter().any(|a| a == "--refresh");
 
     if args.iter().any(|a| a == "--help" || a == "-h") {
         eprintln!("Usage: openusage-waybar [OPTIONS] [PLUGIN_ID...]");
@@ -374,6 +497,10 @@ fn main() {
         eprintln!("Options:");
         eprintln!("  --list          List available plugins and exit");
         eprintln!("  --json          Output full plugin results as JSON");
+        eprintln!("  --refresh       Trigger a manual refresh (for on-click-right);");
+        eprintln!("                  requires --signal N. Flashes a reloading state");
+        eprintln!("                  then signals Waybar to fetch fresh data.");
+        eprintln!("  --signal N      Waybar `signal` value to notify on refresh");
         eprintln!("  -h, --help      Show this help");
         eprintln!();
         eprintln!("Environment:");
@@ -392,8 +519,33 @@ fn main() {
         eprintln!("  \"custom/openusage\": {{");
         eprintln!("    \"exec\": \"openusage-waybar claude\",");
         eprintln!("    \"return-type\": \"json\",");
-        eprintln!("    \"interval\": 300");
+        eprintln!("    \"interval\": 300,");
+        eprintln!("    \"signal\": 8,");
+        eprintln!("    \"on-click-right\": \"openusage-waybar --refresh --signal 8 claude\"");
         eprintln!("  }}");
+        std::process::exit(0);
+    }
+
+    let plugin_ids: Vec<&str> = args
+        .iter()
+        .filter(|a| !a.starts_with('-'))
+        .map(|s| s.as_str())
+        .collect();
+
+    let app_data = app_data_dir();
+    let _ = std::fs::create_dir_all(&app_data);
+    let state = refresh_state(&app_data, &plugin_ids);
+
+    // Right-click refresh worker: flash a loading frame, then signal a real fetch.
+    if refresh_mode {
+        run_refresh_worker(&state, signal);
+        std::process::exit(0);
+    }
+
+    // A pending reload flag means render a loading frame instead of fetching; the
+    // worker clears the flag and re-signals to trigger the actual fetch.
+    if reload_pending(&state) {
+        println!("{}", serde_json::to_string(&loading_output(&state)).unwrap());
         std::process::exit(0);
     }
 
@@ -422,12 +574,6 @@ fn main() {
         std::process::exit(0);
     }
 
-    let plugin_ids: Vec<&str> = args
-        .iter()
-        .filter(|a| !a.starts_with('-'))
-        .map(|s| s.as_str())
-        .collect();
-
     let selected: Vec<LoadedPlugin> = if plugin_ids.is_empty() {
         all_plugins
     } else {
@@ -447,9 +593,6 @@ fn main() {
         println!("{}", serde_json::to_string(&output).unwrap());
         std::process::exit(0);
     }
-
-    let app_data = app_data_dir();
-    let _ = std::fs::create_dir_all(&app_data);
 
     let full_json = args.iter().any(|a| a == "--json");
 
@@ -509,6 +652,10 @@ fn main() {
         class: class.to_string(),
         percentage: 100u8.saturating_sub(pct),
     };
+
+    // Persist the rendered output so a manual refresh can show a loading frame
+    // that keeps the previous tooltip until fresh data arrives.
+    write_cache(&state, &output);
 
     println!("{}", serde_json::to_string(&output).unwrap());
 }
