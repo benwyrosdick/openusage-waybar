@@ -85,6 +85,7 @@ tooltip stays visible on hover). Style it in your Waybar CSS:
 - [**Cursor**](docs/providers/cursor.md) — credits, total usage, auto, API, on-demand, CLI auth
 - [**Factory / Droid**](docs/providers/factory.md) — standard, premium tokens
 - [**Gemini**](docs/providers/gemini.md) — pro, flash, workspace/free/paid tier
+- [**Grok**](docs/providers/grok.md) — weekly pool, extra usage (pay-as-you-go)
 - [**JetBrains AI Assistant**](docs/providers/jetbrains-ai-assistant.md) — quota, remaining
 - [**Kimi Code**](docs/providers/kimi.md) — session, weekly
 - [**MiniMax**](docs/providers/minimax.md) — coding plan session

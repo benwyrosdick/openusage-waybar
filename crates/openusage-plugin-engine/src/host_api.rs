@@ -5,8 +5,9 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Mutex, OnceLock};
 
-const WHITELISTED_ENV_VARS: [&str; 6] = [
+const WHITELISTED_ENV_VARS: [&str; 7] = [
     "CODEX_HOME",
+    "GROK_HOME",
     "ZAI_API_KEY",
     "GLM_API_KEY",
     "MINIMAX_API_KEY",

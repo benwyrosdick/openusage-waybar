@@ -2,6 +2,7 @@
 
 ## Unreleased — Linux/Waybar fork
 
+- Add Grok plugin: weekly shared usage pool and Extra Usage (pay-as-you-go) via Grok CLI auth (`~/.grok/auth.json` / `GROK_HOME`).
 - Add manual refresh: `openusage-waybar --refresh --signal N` (wire to `on-click-right`) flashes a `reloading` state and signals Waybar to fetch fresh data on demand.
 - Forked from upstream openusage at the `waybar-support` branch. The macOS Tauri app and React frontend were removed; this project is now a Linux-only Waybar status bar module (binary: `openusage-waybar`).
 - Workspace simplified to two crates: `openusage-plugin-engine` and `openusage-waybar`.
